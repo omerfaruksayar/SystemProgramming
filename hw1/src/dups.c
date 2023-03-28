@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 int dup(int oldfd){
     int newfd = fcntl(oldfd, F_DUPFD, 0);
@@ -18,8 +19,9 @@ int dup2(int oldfd, int newfd){
         return newfd;
     }
 
-    //If oldfd is not a valid file descriptor, then the call fails, and newfd is not closed.
+    //If oldfd is not a valid file descriptor, then the call fails, and newfd is not closed. Errno set to EBADF.
     if(fcntl(oldfd, F_GETFL) == -1){
+        errno = EBADF;
         return -1;
     }
 
