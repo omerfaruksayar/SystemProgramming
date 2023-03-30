@@ -1,5 +1,5 @@
 CC	= gcc
-CFLAGS	= -g -Wall
+CFLAGS	= -g -Wall -pedantic-errors
 SRC_DIR	= src
 
 all: appendMeMore dups

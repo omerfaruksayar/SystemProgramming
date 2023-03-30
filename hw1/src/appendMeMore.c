@@ -12,6 +12,7 @@ void usage(){
 void writeToFile(const char* path, int numBytes, int isSupplied){
     int fd;
     char byte = 'a';
+    umask(0); //set the file mode creation mask to 0
 
     /*The  file is opened in append mode.  Before each write(2), the file offset is positioned at the end of the
     file, as if with lseek(2).  The modification of the file offset and the write operation are performed as a
@@ -19,7 +20,7 @@ void writeToFile(const char* path, int numBytes, int isSupplied){
     if(!isSupplied)
     {   
         //If the file does not exist it will be created.
-        fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0666);
         if (fd == -1)
         {
             perror("open");
@@ -38,9 +39,8 @@ void writeToFile(const char* path, int numBytes, int isSupplied){
     }
 
     else{
-
         //If the file does not exist it will be created and opened without O_APPEND flag.
-        fd = open(path, O_WRONLY | O_CREAT, 0644);
+        fd = open(path, O_WRONLY | O_CREAT, 0666);
 
         if (fd == -1)
         {

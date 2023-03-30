@@ -39,10 +39,22 @@ int dup2(int oldfd, int newfd){
 
 int main(int argc, char const *argv[])
 {
-    int fd = open("test.txt", O_RDWR | O_CREAT, 0644);
+    int fd = open("test.txt", O_RDWR | O_CREAT, 0666);
     int fd2 = dup(fd);
     int fd3 = dup2(fd2, 10);
-    printf("fd: %d, fd2: %d, fd3: %d\n", fd, fd2, fd3);
+
+    if (dup2(-1,fd3) == -1)
+        perror("dup2");
+    
+    printf("\nCurrent fds are\nfd: %d, fd2: %d, fd3: %d\n\n", fd, fd2, fd3);
+
+    int seekOffset = lseek(fd, 0, SEEK_CUR);
+    printf("File offsets before the write operation\n\n");
+    printf("File offset of the fd (%d) : %d\n",fd,seekOffset);
+    seekOffset = lseek(fd2, 0, SEEK_CUR);
+    printf("File offset of the fd2 (%d) : %d\n",fd2,seekOffset);
+    seekOffset = lseek(fd3, 0 ,SEEK_CUR);
+    printf("File offset of the fd3 (%d) : %d\n\n",fd3,seekOffset);
 
     const char* str = "Hello World!";
     int check = write(fd, str, 12);
@@ -50,13 +62,15 @@ int main(int argc, char const *argv[])
         perror("write");
         return 1;
     }
-
-    int seekOffset = lseek(fd2, 0, SEEK_CUR);
-    printf("fd2 seekOffset: %d\n", seekOffset);
+    printf("File offsets after the write operation\n\n");
+    seekOffset = lseek(fd, 0, SEEK_CUR);
+    printf("File offset of the fd (%d) : %d\n",fd,seekOffset);
+    seekOffset = lseek(fd2, 0, SEEK_CUR);
+    printf("File offset of the fd2 (%d) : %d\n",fd2,seekOffset);
     seekOffset = lseek(fd3, 0 ,SEEK_CUR);
-    printf("fd3 seekOffset: %d\n", seekOffset);
+    printf("File offset of the fd3 (%d) : %d\n\n",fd3,seekOffset);
 
-    lseek(fd3, 0, SEEK_SET);
+    lseek(fd3, 0, SEEK_SET); //sets the file offset to beginning of the file
 
     char* buf = (char*)malloc(sizeof(char)*12);
     check = read(fd2, buf, 12);
@@ -64,8 +78,7 @@ int main(int argc, char const *argv[])
         perror("read");
         return 1;
     }
-
-    printf("buf: %s\n", buf);
+    printf("Written string is: %s\n", buf);
     free(buf);
     close(fd);
     return 0;
