@@ -12,7 +12,7 @@
 #define MAX_ARGS 20
 #define MAX_INPUT 1024
 
-int num_commands = 0;
+int num_commands;
 char input[MAX_INPUT];
 char* commands[MAX_COMMANDS];
 char* arguments[MAX_ARGS];
@@ -20,20 +20,18 @@ pid_t pids[MAX_COMMANDS];
 int pipes[MAX_COMMANDS-1][2];
 static volatile int alive = 1;
 
-int parse_commands(char* input, char** commands) {
-    int num_commands = 0;
+void parse_commands(char* input, char** commands) {
+    num_commands = 0;
     char* command = strtok(input, "|");
+
     while (command != NULL) {
         commands[num_commands] = command;
         num_commands++;
         command = strtok(NULL, "|");
     }
-    return num_commands;
 }
 
 int parse_arguments(char* command, char** arguments) {
-
-    memset(arguments, 0, MAX_ARGS * sizeof(char*));
     int num_args = 0;
     char* arg = strtok(command, " ");
    
@@ -42,14 +40,15 @@ int parse_arguments(char* command, char** arguments) {
         num_args++;
         arg = strtok(NULL, " ");
     }
+
     arguments[num_args] = NULL;
     return num_args;
 }
 
 void reset(){
-
-    fflush(stdout);
     fflush(stdin);
+    fflush(stdout);
+    memset(arguments, 0, MAX_ARGS * sizeof(char*));
     memset(commands, 0, MAX_COMMANDS * sizeof(char*));
     memset(pipes, 0, (MAX_COMMANDS-1) * sizeof(int[2]));
     memset(input, 0, MAX_INPUT * sizeof(char));
@@ -61,7 +60,7 @@ void usage() {
     printf("Usage: command [arg ...], for exit type :q (You can give max 20 commands with max 20 arguments) (Only pipe '|' and redirection operators '<', '>' are supported)\n");
 } 
 
-void handler(int signum) {
+void sig_handler(int signum) {
 
     if(num_commands > 0){
         printf("\nCaught signal %d, killing child processes...\n", signum);
@@ -83,7 +82,13 @@ void handler(int signum) {
 }
 
 void quit_handler(int signum){
-    printf("Caught signal %d, quiting...\n", signum);
+
+    if(signum)
+        printf("Caught signal %d, quiting...\n", signum);
+    
+    else
+        printf("Quiting...\n");
+
     for (int i = 0; i < num_commands; i++) {
         if (pids[i] != 0) {
             kill(pids[i], SIGTERM);
@@ -91,29 +96,41 @@ void quit_handler(int signum){
             pids[i] = 0;
         }
     }
-    reset();
     alive = 0;
 }
 
+int main(int argc, char* argv[]) {
 
-int main() {
-    signal(SIGINT, handler);
-    signal(SIGTERM, handler);
+    if (argc != 1) {
+        usage();
+        exit(EXIT_FAILURE);
+    }
+    
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGTSTP, sig_handler);
     signal(SIGQUIT, quit_handler);
     int num_args, in_fd, out_fd;
 
-    while (alive && !feof(stdin)) {
+    while (alive) {
         
         printf("$ ");
-        fgets(input, MAX_INPUT, stdin);
+        reset();
+        if (fgets(input, MAX_INPUT, stdin) == NULL)
+        {
+            quit_handler(0);
+            break;
+        }
         
         input[strcspn(input, "\t")] = 0; // remove tab character
         input[strcspn(input, "\n")] = 0; // remove newline character
 
-        if (strcmp(input,":q") == 0)
+        if (strcmp(input,":q") == 0){
+            quit_handler(0);
             break;        
-
-        num_commands = parse_commands(input, commands);
+        }
+            
+        parse_commands(input, commands);
 
         if (num_commands == 0 || num_commands > 20){
             usage();
@@ -127,7 +144,7 @@ int main() {
             }
         }
 
-
+        // Fork child processes
         for (int i = 0; i < num_commands; i++) {
             num_args = parse_arguments(commands[i], arguments);
             pids[i] = fork();
@@ -140,12 +157,22 @@ int main() {
 
                 case 0:
 
-                    if (i > 0)
-                        dup2(pipes[i - 1][0], 0); // Duplicate read end to stdin
+                    if (i > 0){
+                        // Duplicate read end to stdin
+                        if(dup2(pipes[i-1][0], 0) == -1){
+                            perror("dup2");
+                            exit(EXIT_FAILURE);
+                        }
+                    }
 
                     if (i < num_commands - 1)
-                        dup2(pipes[i][1], 1); // Duplicate write end to stdout
+                        // Duplicate write end to stdout
+                        if(dup2(pipes[i][1], 1) == -1){
+                            perror("dup2");
+                            exit(EXIT_FAILURE);
+                        }
 
+                    // Close all pipes end we're using was safely copied
                     for (int j = 0; j < num_commands - 1; j++) {
                         close(pipes[j][0]);
                         close(pipes[j][1]);
@@ -163,13 +190,13 @@ int main() {
                             dup2(in_fd, STDIN_FILENO);
                             close(in_fd);
                             arguments[k] = NULL;
-                            arguments[k+1] = NULL;
-                            break;    
+                            //arguments[k+1] = NULL;
+                      
                         }
 
                         if (strcmp(arguments[k],">") == 0)
-                        {
-                            out_fd = open(arguments[k+1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                        {   
+                            out_fd = open(arguments[k+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
 
                             if (out_fd == -1)
                                 perror("open");
@@ -177,36 +204,34 @@ int main() {
                             dup2(out_fd, STDOUT_FILENO);
                             close(out_fd);
                             arguments[k] = NULL;
-                            arguments[k+1] = NULL;
-                            break;
-                        }
-                        
+                            //arguments[k+1] = NULL;
+                            
+                        }   
                     }
-                    
-                    execl("/bin/sh", "/bin/sh", "-c", arguments[i], NULL);
-                    perror("execl");
+
+                    if (execvp(arguments[0], arguments) == -1)
+                    {
+                        perror("execvp");
+                        exit(EXIT_FAILURE);
+                    }
 
                 default:
                     break;            
             }
         }
 
+        // Close all pipe descriptors
         for (int i = 0; i < num_commands - 1; i++) {
             close(pipes[i][0]);
             close(pipes[i][1]);
         }
 
-        int status;
+        // Wait for all child processes to finish
         for (int i = 0; i < num_commands; i++) {
-            waitpid(pids[i], &status, 0);
-            if (WIFEXITED(status))
-            {
-                const int es = WEXITSTATUS(status);
-                printf("exit status was %d\n", es);
-            }
-            
+            waitpid(pids[i], NULL, 0);
         }
 
+        // Write to log file
         time_t now = time(NULL);
         char timestamp[20];
         strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H:%M:%S", localtime(&now));
@@ -225,9 +250,6 @@ int main() {
         } 
         else 
             perror("fopen");
-        
-
-        reset();
     }
 
     return 0;
