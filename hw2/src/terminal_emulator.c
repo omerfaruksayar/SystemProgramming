@@ -67,7 +67,7 @@ void sig_handler(int signum) {
         for (int i = 0; i < num_commands; i++) {
             if (pids[i] != 0) {
                 kill(pids[i], SIGTERM);
-                waitpid(pids[i], NULL, 0);
+                wait(NULL);
                 pids[i] = 0;
             }
         }
@@ -83,16 +83,12 @@ void sig_handler(int signum) {
 
 void quit_handler(int signum){
 
-    if(signum)
-        printf("Caught signal %d, quiting...\n", signum);
-    
-    else
-        printf("Quiting...\n");
+    printf("Caught signal %d, quiting...\n", signum);
 
     for (int i = 0; i < num_commands; i++) {
         if (pids[i] != 0) {
             kill(pids[i], SIGTERM);
-            waitpid(pids[i], NULL, 0);
+            wait(NULL);
             pids[i] = 0;
         }
     }
@@ -126,7 +122,7 @@ int main(int argc, char* argv[]) {
         input[strcspn(input, "\n")] = 0; // remove newline character
 
         if (strcmp(input,":q") == 0){
-            quit_handler(0);
+            printf("Quiting...\n");
             break;        
         }
             
@@ -137,6 +133,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        //create pipes
         for (int i = 0; i < num_commands-1; i++){
             if (pipe(pipes[i]) == -1){
                 perror("pipe");
@@ -257,7 +254,7 @@ int main(int argc, char* argv[]) {
 
         // Wait for all child processes to finish
         for (int i = 0; i < num_commands; i++) {
-            waitpid(pids[i], NULL, 0);
+            wait(NULL);
         }
 
         // Write to log file
