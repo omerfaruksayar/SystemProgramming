@@ -178,36 +178,65 @@ int main(int argc, char* argv[]) {
                         close(pipes[j][1]);
                     }
 
-                    for (size_t k = 0; k < num_args; k++)
+                    int index[2] = {0,0};
+
+                    for (int k = 1; k < num_args; k++)
                     {
                         if (strcmp(arguments[k],"<") == 0)
-                        {
+                        {   
+                            if (arguments[k+1] == NULL)
+                            {
+                                printf("No input file specified!\n");
+                                exit(EXIT_FAILURE);
+                            }
+                            
+
                             in_fd = open(arguments[k+1], O_RDONLY);
 
-                            if (in_fd == -1)
+                            if (in_fd == -1){
                                 perror("open");
+                                exit(EXIT_FAILURE);
+                            }
                             
-                            dup2(in_fd, STDIN_FILENO);
+                            dup2(in_fd, 0);
                             close(in_fd);
-                            arguments[k] = NULL;
-                            //arguments[k+1] = NULL;
+                            index[0] = k;
                       
                         }
 
                         if (strcmp(arguments[k],">") == 0)
                         {   
-                            out_fd = open(arguments[k+1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                            if (arguments[k+1] == NULL)
+                            {
+                                printf("No output file specified!\n");
+                                exit(EXIT_FAILURE);
+                            }
 
-                            if (out_fd == -1)
+                            out_fd = open(arguments[k+1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+                            if (out_fd == -1){
                                 perror("open");
+                                exit(EXIT_FAILURE);
+                            }
 
-                            dup2(out_fd, STDOUT_FILENO);
+                            dup2(out_fd, 1);
                             close(out_fd);
-                            arguments[k] = NULL;
-                            //arguments[k+1] = NULL;
-                            
+                            index[1] = k;
                         }   
                     }
+
+                    if (index[0] != 0)
+                    {
+                        arguments[index[0]] = NULL;
+                        arguments[index[0]+1] = NULL;
+                    }
+
+                    if (index[1] != 0)
+                    {
+                        arguments[index[1]] = NULL;
+                        arguments[index[1]+1] = NULL;
+                    }
+                    
 
                     if (execvp(arguments[0], arguments) == -1)
                     {
