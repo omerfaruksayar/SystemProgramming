@@ -1,47 +1,63 @@
-//This program is a server program that will receive a message from a client and send a message back to the client.
-//the Server side would enter the specified directory (create  dirname if the dirname does not exits), 
-// create  a  log  file  for  the  clients  and  prompt  its  PID  for  the  clients  to  connect.  The  for  each  client 
-// connected will fork a copy of itself in order to serve the specified client (commands are given on the 
-// client  side). If  a  kill  signal  is  generated  (either  by  Ctrl-C  or  from  a  client  side  request)  Server  is 
-// expected to display the request, send kill signals to its child processes, ensure the log file is created 
-// properly and exit.
-
-//Usage: biboServer <dirname> <max. #ofClients> 
-
-#include "../include/asQueue.h"
 #include <stdio.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <semaphore.h>
-#include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <string.h>
 #include <errno.h>
-#include <time.h>
+#include "../include/common.h"
 
-#define CAPACITY 1000
-#define SHM_SIZE sizeof(Queue)*CAPACITY
+volatile sig_atomic_t children_num = 0;
+volatile sig_atomic_t client_num = 0;
 
-Queue* queue;
-int handled = 0;
+queue_t connection_queue;
+char* working_dir;
 
-void handle_signal(int sig) {
-    sem_wait(&queue->mutex);
-    int running; 
-    sem_getvalue(&queue->running, &running);
-    if(running == 0)
-        printf("Connection request PID %d... Queue is full\n", &queue->data[queue->rear]);
-        
-    sem_post(&queue->mutex);
+void handle_client(pid_t client_pid) {
+    
+    children_num++;
+    pid_t pid = fork();
+    if (pid == -1) {
+        printf("Error: Failed to fork new process: %s\n", strerror(errno));
+        return;
+    } 
+    else if (pid == 0) 
+    {
+        // child process
+        // construct client FIFO path
+        char client_fifo_path[256];
+        snprintf(client_fifo_path, sizeof(client_fifo_path), "/tmp/client.%d", client_pid);
+        // open client FIFO for writing
+        int client_fifo_fd = open(client_fifo_path, O_WRONLY);
+        if (client_fifo_fd == -1) {
+            printf("Error: Failed to open client FIFO %s for writing: %s\n", client_fifo_path, strerror(errno));
+            exit(1);
+        }
+        int num = client_num++;
+        printf("Connection established with client %d as client %d\n", client_pid, num);
+        //send working directory to client
+        connectionRes res;
+        res.child_pid = getpid();
+        res.num = num;
+        res.working_dir = working_dir;
+        write(client_fifo_fd, &res, sizeof(connectionRes));
+        exit(0);
+    }
 }
 
-int main(int argc, char const *argv[])
-{   
+void sigchld_handler(int sig) {
+    children_num--;
+    // check if there are queued requests
+    if(!is_queue_empty(&connection_queue)) {
+        pid_t client_pid = dequeue(&connection_queue);
+        handle_client(client_pid);
+    }
+}
 
+int main(int argc, char* argv[]) {
     if(argc < 3)
     {
         printf("Usage: %s <dirname> <max. #ofClients>\n", argv[0]);
@@ -49,62 +65,52 @@ int main(int argc, char const *argv[])
     }
 
     int max = atoi(argv[2]);
-    
-    if (signal(SIGUSR1, handle_signal) == SIG_ERR) {
-        perror("signal");
-        return 1;
-    }
-
-    int fd = shm_open("OS", O_RDWR | O_CREAT, 0666);
-    if (fd == -1) {
-        perror("shm_open");
+    if (max <= 0) {
+        printf("Error: Invalid max value.\n");
         exit(1);
     }
 
-    if (ftruncate(fd, SHM_SIZE) == -1) {
-        perror("ftruncate");
-        return 1;
+    working_dir = argv[1];
+
+    mkfifo(SERVER_FIFO_PATH, 0666);
+    // open server FIFO for reading
+    int server_fifo_fd = open(SERVER_FIFO_PATH, O_RDONLY);
+    if (server_fifo_fd == -1) {
+        printf("Error: Failed to open server FIFO %s for reading: %s\n", SERVER_FIFO_PATH, strerror(errno));
+        exit(1);
     }
 
-    queue = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (queue == MAP_FAILED) {
-        perror("mmap");
-        return 1;
-    }
-
-    if(close(fd) == -1) {
-        perror("close");
-        return 1;
-    }
-
-    initialize(queue, CAPACITY, max);
-    printf("Server is ready to accept connections...\n");
-    while(1){
+    struct sigaction sa;
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL); 
         
-        sem_wait(&queue->full);
-        sem_wait(&queue->running);
-        sem_wait(&queue->mutex);
-
-        if(fork() == 0)
-        {   
-            pid_t client = dequeue(queue);
-            printf("Client %d connected as \n", client);
-            sleep(15);
-            sem_post(&queue->running);
+    printf("Server started. Listening for connections...\n");    
+    
+    while (1) {
+        connectionReq req;
+        ssize_t num_read = read(server_fifo_fd, &req, sizeof(connectionReq));
+        if (num_read == -1) {
+            printf("Error: Failed to read connection request from server FIFO: %s\n", strerror(errno));
+            continue;
+        } 
+        else if (num_read == 0) {
+            printf("Server FIFO closed by client.\n");
+            break;
         }
-
-        else{
-            sem_post(&queue->mutex);
-            sem_post(&queue->empty);
+        
+        if (children_num >= max) {
+            // queue request
+            enqueue(&connection_queue, req.client_pid);
+            printf("Client %d queued due to maximum number of child processes reached.\n", req.client_pid);
+        } 
+        else {
+            // handle request immediately
+            handle_client(req.client_pid, 0);
         }
     }
-
-    // Semaförleri sil ve belleği kapat
-    sem_destroy(&queue->mutex);
-    sem_destroy(&queue->full);
-    sem_destroy(&queue->empty);
-    munmap(queue, SHM_SIZE);
-    shm_unlink("OS");
-    
+    close(server_fifo_fd);
+    unlink(SERVER_FIFO_PATH);
     return 0;
 }

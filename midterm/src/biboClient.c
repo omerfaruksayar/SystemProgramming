@@ -1,46 +1,73 @@
-#include "../include/asQueue.h"
 #include <stdio.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <semaphore.h>
-#include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <string.h>
 #include <errno.h>
-#include <time.h>
 
-#define CAPACITY 1000    
-#define SHM_SIZE sizeof(Queue)*CAPACITY
+#include "../include/common.h"
 
-int main(int argc, char const *argv[])
-{   
-    int serverPID = atoi(argv[1]);
-    int fd = shm_open("OS", O_RDWR, 0666);
-    Queue* queue = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    
-    if (close(fd) == -1)
-    {
-        perror("close");
-        return 1;
+int main(int argc, char *argv[]) {
+    // parse command-line arguments
+    if (argc != 3) {
+        printf("Usage: %s <Connect/tryConnect> ServerPID\n", argv[0]);
+        exit(1);
     }
+    pid_t server_pid = atoi(argv[1]);
+
+    // create connection request struct
+    connectionReq req;
+    req.pid = getpid();
+    if (strcmp(argv[2], "Connect") == 0)
+        req.tryFlag = 0; // client will wait in the queue
     
-    pid_t item = getpid();
+    else if (strcmp(argv[2], "tryConnect") == 0
+        req.tryFlag = 1; // client will not wait in the queue
 
-    sem_wait(&queue->empty);
-    sem_wait(&queue->mutex);
-    enqueue(queue, item);
-    if (kill(serverPID, SIGUSR1) == -1) {
-        perror("kill");
-        return 1;
+
+    char server_fifo[256];
+    snprintf(server_fifo, MAX_BUF, "/tmp/server.%d", server_pid);
+    // send connection request to server
+    int server_fifo_fd = open(server_fifo, O_WRONLY);
+    if (server_fifo_fd == -1) {
+        printf("Error: Failed to open server FIFO: %s\n", strerror(errno));
+        exit(1);
     }
-    sem_post(&queue->mutex);
-    sem_post(&queue->full);
+    if (write(server_fifo_fd, &req, sizeof(connectionReq), 0) == -1) {
+        perror("write");
+        close(server_fifo_fd);
+        exit(1);
+    }
 
-    printf("Enqueued: %d\n", item);
+    // wait for server response
+    char client_fifo[256];
+    snprintf(client_fifo, MAX_BUF, "/tmp/client.%d", getpid());
+    if (mkfifo(client_fifo, 0666) == -1) {
+        printf("Error: Failed to create client FIFO %s: %s\n", client_fifo, strerror(errno));
+        close(server_fifo_fd);
+        exit(1);
+    }
+    int client_fifo_fd = open(client_fifo, O_RDONLY | O_NONBLOCK);
+    if (client_fifo_fd == -1) {
+        printf("Error: Failed to open client FIFO %s for reading: %s\n", client_fifo, strerror(errno));
+        close(server_fifo_fd);
+        unlink(client_fifo);
+        exit(1);
+    }
+
+    connectionResp resp;
+    ssize_t num_bytes = read(client_fifo_fd, &resp, sizeof(connectionResp), 0);
+
+    printf("Connection established with server %d\n", resp.child_pid);
+
+    // clean up
+    close(server_fifo_fd);
+    close(client_fifo_fd);
+    unlink(client_fifo_path);
 
     return 0;
 }
