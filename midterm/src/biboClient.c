@@ -55,21 +55,47 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    connectionRes resp;
-
     int client_fifo_fd = open(client_fifo, O_RDONLY);
     if (client_fifo_fd == -1) {
         perror("open");
         exit(1);
     }
 
+    connectionRes resp;
     ssize_t bytes =  read(client_fifo_fd, &resp, sizeof(connectionRes));
     if (bytes == sizeof(connectionRes)) {
+        if (resp.child_pid == -1)
+        {
+            printf("Connection request rejected\n");
+            exit(0);
+        }
+        
         printf("Connection established with server %d\n", resp.child_pid);
-    } 
-    else if (bytes == -1) {
+        char serv_child_fifo[256];
+        snprintf(serv_child_fifo, sizeof(serv_child_fifo), "/tmp/server.%d", resp.child_pid);
+        if(mkfifo(serv_child_fifo, 0666) == -1) {
+            perror("mkfifo");
+            exit(1);
+        }
+
+        int serv_child_fifo_fd = open(serv_child_fifo, O_WRONLY);
+        if (serv_child_fifo_fd == -1) {
+            perror("open");
+            exit(1);
+        }
+
+        printf("disconnect\n");
+        // while (1)
+        // {
+        //  //TODO Client requests   
+        // }
+
+    }
+
+    else 
+    {   
         perror("read");
-        exit(1);
+        exit(1); 
     }
 
     // clean up
