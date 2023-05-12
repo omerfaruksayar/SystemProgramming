@@ -8,17 +8,18 @@
 #include <signal.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include "../include/common.h"
-
-volatile sig_atomic_t children_num = 0;
-volatile sig_atomic_t client_num = 0;
 
 queue_t connection_queue;
 char* working_dir;
+int max_client_num;
+sig_atomic_t child_num;
+sig_atomic_t client_num;
+
 
 void handle_client(pid_t client_pid) {
-    
-    children_num++;
+
     pid_t pid = fork();
     if (pid == -1) {
         printf("Error: Failed to fork new process: %s\n", strerror(errno));
@@ -26,14 +27,12 @@ void handle_client(pid_t client_pid) {
     } 
     else if (pid == 0) 
     {
-        // child process
-        // construct client FIFO path
         char client_fifo_path[256];
         snprintf(client_fifo_path, sizeof(client_fifo_path), "/tmp/client.%d", client_pid);
         // open client FIFO for writing
         int client_fifo_fd = open(client_fifo_path, O_WRONLY);
         if (client_fifo_fd == -1) {
-            printf("Error: Failed to open client FIFO %s for writing: %s\n", client_fifo_path, strerror(errno));
+            perror("open");
             exit(1);
         }
         int num = client_num++;
@@ -43,13 +42,17 @@ void handle_client(pid_t client_pid) {
         res.child_pid = getpid();
         res.num = num;
         res.working_dir = working_dir;
+        sleep(5);
         write(client_fifo_fd, &res, sizeof(connectionRes));
+        close(client_fifo_fd);
         exit(0);
     }
 }
 
 void sigchld_handler(int sig) {
-    children_num--;
+    if (child_num != 0)
+        child_num--;
+    
     // check if there are queued requests
     if(!is_queue_empty(&connection_queue)) {
         pid_t client_pid = dequeue(&connection_queue);
@@ -64,53 +67,65 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int max = atoi(argv[2]);
-    if (max <= 0) {
+    max_client_num = atoi(argv[2]);
+    if (max_client_num <= 0) {
         printf("Error: Invalid max value.\n");
-        exit(1);
+        return 1;
     }
 
-    working_dir = argv[1];
-
-    mkfifo(SERVER_FIFO_PATH, 0666);
-    // open server FIFO for reading
-    int server_fifo_fd = open(SERVER_FIFO_PATH, O_RDONLY);
-    if (server_fifo_fd == -1) {
-        printf("Error: Failed to open server FIFO %s for reading: %s\n", SERVER_FIFO_PATH, strerror(errno));
-        exit(1);
-    }
+     printf("Server started. Listening for connections...\n");
 
     struct sigaction sa;
     sa.sa_handler = sigchld_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
     sigaction(SIGCHLD, &sa, NULL); 
-        
-    printf("Server started. Listening for connections...\n");    
-    
+
+    working_dir = argv[1];
+    pid_t pid = getpid();
+    char server_fifo[256];
+    snprintf(server_fifo, sizeof(server_fifo), "/tmp/server.%d", pid);
+
+    mkfifo(server_fifo, 0666);
+    // open server FIFO for reading
+    int server_fifo_fd = open(server_fifo, O_RDONLY);
+    if (server_fifo_fd == -1) {
+        perror("open");
+        exit(1);
+    }
+
+    init_queue(&connection_queue);
+    mmap(&child_num, sizeof(child_num), PROT_READ|PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    child_num = 0;
+    mmap(&client_num, sizeof(client_num), PROT_READ|PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    client_num = 1;
+
     while (1) {
-        connectionReq req;
+        connectionReq req;    
         ssize_t num_read = read(server_fifo_fd, &req, sizeof(connectionReq));
         if (num_read == -1) {
             printf("Error: Failed to read connection request from server FIFO: %s\n", strerror(errno));
             continue;
-        } 
+        }
+
         else if (num_read == 0) {
-            printf("Server FIFO closed by client.\n");
-            break;
+            continue;
         }
         
-        if (children_num >= max) {
+        if (child_num == max_client_num) {
             // queue request
             enqueue(&connection_queue, req.client_pid);
-            printf("Client %d queued due to maximum number of child processes reached.\n", req.client_pid);
+            printf("Connection request PID %d ...  Queue is FULL\n", req.client_pid);
         } 
         else {
-            // handle request immediately
-            handle_client(req.client_pid, 0);
+            // handle request
+            child_num++;
+            handle_client(req.client_pid);
         }
     }
+    munmap(&child_num, sizeof(child_num));
+    munmap(&client_num, sizeof(client_num));
     close(server_fifo_fd);
-    unlink(SERVER_FIFO_PATH);
+    unlink(server_fifo);
     return 0;
 }

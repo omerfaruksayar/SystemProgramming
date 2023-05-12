@@ -1,6 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef enum request_type {
+    LIST,
+    READF,
+    WRITET,
+    UPLOAD,
+    DOWNLOAD,
+    QUIT,
+    KILL
+}request_type;
+
 typedef struct node {
     int data;
     struct node* next;
@@ -17,10 +27,15 @@ typedef struct connectionReq {
 } connectionReq;
 
 typedef struct connectionRes {
-    int child_pid;
+    pid_t child_pid;
     int num;
     char* working_dir;
 } connectionRes;
+
+typedef struct Request {
+    request_type request;
+    char message[1024];
+} Request;
 
 void init_queue(queue_t* q) {
     q->head = NULL;
@@ -45,10 +60,7 @@ void enqueue(queue_t* q, int data) {
 }
 
 int dequeue(queue_t* q) {
-    if (is_queue_empty(q)) {
-        printf("Error: Queue is empty\n");
-        return -1;
-    }
+
     int data = q->head->data;
     node_t* temp = q->head;
     q->head = q->head->next;
