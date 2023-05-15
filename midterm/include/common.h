@@ -26,15 +26,10 @@ typedef struct connectionReq {
     int try_flag;
 } connectionReq;
 
-typedef struct connectionRes {
-    pid_t child_pid;
-    int num;
-    char* working_dir;
-} connectionRes;
 
 typedef struct Request {
     request_type request;
-    char message[1024];
+    char* message;
 } Request;
 
 void init_queue(queue_t* q) {
