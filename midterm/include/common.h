@@ -26,10 +26,11 @@ typedef struct connectionReq {
     int try_flag;
 } connectionReq;
 
-
 typedef struct Request {
     request_type request;
-    char* message;
+    char filename[256];
+    u_int64_t offset;
+
 } Request;
 
 void init_queue(queue_t* q) {

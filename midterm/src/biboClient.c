@@ -62,28 +62,31 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    pid_t child_server_pid;
-    ssize_t bytes =  read(client_fifo_fd, &child_server_pid, sizeof(child_server_pid));
-    if (bytes == sizeof(child_server_pid)) {
-        if (child_server_pid == -1)
+    int connection_status;
+    ssize_t bytes =  read(client_fifo_fd, &connection_status, sizeof(connection_status));
+    if (bytes == sizeof(connection_status)) {
+        if (connection_status == -1)
         {
             printf("Connection request rejected\n");
             exit(0);
         }
         
-        printf("Connection established with server %d\n", child_server_pid);
-        char serv_child_fifo[256];
-        snprintf(serv_child_fifo, sizeof(serv_child_fifo), "/tmp/server.%d", child_server_pid);
-        // open child server FIFO for writing
-        sleep(0.1);
-        serv_child_fifo_fd = open(serv_child_fifo, O_WRONLY);
-        if (serv_child_fifo_fd == -1) {
-            perror("open child server fifo");
+        printf("Connection established with server\n");
+
+        if(close(client_fifo_fd) == -1){
+            perror("close");
             exit(1);
         }
 
         while (1)
         {   
+            // open client fifo for writing
+            int client_fifo_fd = open(client_fifo, O_WRONLY);
+            if (client_fifo_fd == -1) {
+                perror("open client fifo");
+                exit(1);
+            }
+
             Request req;
             printf("Enter a command: ");
             fflush(stdout);
@@ -110,31 +113,93 @@ int main(int argc, char *argv[]) {
                 printf("exit\n");                
             }
 
-            if(strcmp(command,"list") == 0){
+            else if(strcmp(command,"list") == 0){
                 req.request = LIST;
-                req.message = NULL;
-                if (write(serv_child_fifo_fd, &req, sizeof(Request)) == -1) {
+                if (write(client_fifo_fd, &req, sizeof(Request)) == -1) {
                     perror("write");
                     continue;
                 }
 
-                if(read(client_fifo_fd, &req, sizeof(Request)) == -1){
-                    perror("read");
+                if(close(client_fifo_fd) == -1){
+                    perror("close");
+                    exit(1);
+                }
+
+                client_fifo_fd = open(client_fifo, O_RDONLY);
+                if (client_fifo_fd == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+
+                char buf[256];
+                memset(buf, 0, sizeof(buf));
+
+                while (read(client_fifo_fd, &buf, sizeof(buf)) != 0)
+                {
+                    printf("%s", buf);
+                    memset(buf, 0, sizeof(buf));
+                }
+
+                if(close(client_fifo_fd) == -1){
+                    perror("close");
+                    exit(1);
+                }
+            }
+
+            else if (strcmp(command,"readF") == 0){
+
+                char* filename = strtok(NULL, " ");
+                if (filename == NULL)
+                {
+                    printf("Usage: readF <file> <line #>\n");
                     continue;
                 }
 
-                printf("List of files:\n");
-                while (1)
+                char* lineNum = strtok(NULL, " ");
+                if (lineNum == NULL)
                 {
-                    //parse req.message according to space character and print each token
-                    char *token = strtok(req.message, " ");
-                    if (token == NULL)
-                        break;
-                    printf("%s\n", token);
-                    free(req.message);
+                    printf("Usage: readF <file> <line #>\n");
+                    continue;
                 }
-                
-            }  
+
+                req.request = READF;
+                strcpy(req.filename, filename);
+                req.filename[strlen(filename)] = '\0';
+                req.offset = atoi(lineNum);
+
+                if (write(client_fifo_fd, &req, sizeof(Request)) == -1) {
+                    perror("write");
+                    continue;
+                }
+
+                if(close(client_fifo_fd) == -1){
+                    perror("close");
+                    exit(1);
+                }
+
+                client_fifo_fd = open(client_fifo, O_RDONLY);
+                if (client_fifo_fd == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+
+                char buf[BUFSIZE];
+                memset(buf, 0, sizeof(buf));
+
+                while (read(client_fifo_fd, &buf, sizeof(buf)) != 0)
+                {
+                    printf("%s", buf);
+                    memset(buf, 0, sizeof(buf));
+                }
+
+                printf("\n");
+
+                if(close(client_fifo_fd) == -1){
+                    perror("close");
+                    exit(1);
+                }
+            }
+
         }
     }
 
