@@ -30,6 +30,8 @@ typedef struct Request {
     request_type request;
     char filename[256];
     u_int64_t offset;
+    char string[4096];
+    char client_dir[256];
 
 } Request;
 

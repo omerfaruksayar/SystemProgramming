@@ -25,13 +25,33 @@ sig_atomic_t* child_pids;
 queue_t connection_queue;
 sem_t *log_mutex;
 
-char* get_line(const char* path, int line_num) {
-    FILE* fp = fopen(path, "r");
-    if (fp == NULL) {
-        fprintf(stderr, "Error opening file\n");
-        exit(EXIT_FAILURE);
+size_t copy_file(FILE* src_file, const char* dest_path) {
+    FILE* dest_file = fopen(dest_path, "wb");
+    if (dest_file == NULL) {
+        return 0;
     }
 
+    char buffer[1024];
+    size_t bytes_transferred = 0;
+    size_t bytes_read;
+
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), src_file)) > 0) {
+        size_t bytes_written = fwrite(buffer, 1, bytes_read, dest_file);
+        if (bytes_written != bytes_read) {
+            fprintf(stderr, "Error writing to destination file\n");
+            fclose(dest_file);
+            return bytes_transferred;
+        }
+
+        bytes_transferred += bytes_written;
+    }
+
+    fclose(dest_file);
+    return bytes_transferred;
+}
+
+char* get_line(FILE* fp, int line_num) {
+    
     char* line = NULL;
     size_t len = 0;
     ssize_t read;
@@ -48,6 +68,59 @@ char* get_line(const char* path, int line_num) {
 
     fclose(fp);
     return NULL;
+}
+
+int write_to_line(FILE* file, int line_num, const char* str) {
+    // Get the current position in the file
+    long position = ftell(file);
+
+    // Move the file pointer to the beginning
+    rewind(file);
+
+    char buffer[1024];
+    int current_line = 1;
+    int line_written = 0;
+
+    // Create a temporary file to write the modified contents
+    FILE* temp_file = tmpfile();
+    if (temp_file == NULL) {
+        fprintf(stderr, "Error creating temporary file\n");
+        return 0;
+    }
+
+    // Read the file line by line and write to the temporary file
+    while (fgets(buffer, sizeof(buffer), file)) {
+        if (current_line == line_num) {
+            // Write the new string to the specified line
+            fputs(str, temp_file);
+            line_written = 1;
+        } else {
+            // Write the current line from the original file
+            fputs(buffer, temp_file);
+        }
+
+        current_line++;
+    }
+
+    // If the line was not written (line number was greater than the total lines),
+    // return 0 indicating failure
+    if (!line_written) {
+        fprintf(stderr, "Specified line does not exist\n");
+        fclose(temp_file);
+        return 0;
+    }
+
+    // Move the file pointer back to the original position
+    fseek(file, position, SEEK_SET);
+
+    // Copy the contents from the temporary file to the original file
+    rewind(temp_file);
+    while (fgets(buffer, sizeof(buffer), temp_file)) {
+        fputs(buffer, file);
+    }
+
+    fclose(temp_file);
+    return 1;
 }
 
 void log_message(const char *message) {
@@ -93,209 +166,345 @@ void handle_client(pid_t client_pid) {
         snprintf(client_fifo, sizeof(client_fifo), "/tmp/client.%d", client_pid);
 
         // open client FIFO for writing
-        int client_fifo_fd = open(client_fifo, O_WRONLY);
+        int client_fifo_fd = open(client_fifo, O_WRONLY| O_CREAT, 0666);
         if (client_fifo_fd == -1) {
             perror("open client fifo");
-            (*child_num)--;
             exit(1);
         }
         
         if (write(client_fifo_fd, &child_pid, sizeof(child_pid)) == -1) {
             perror("write");
             close(client_fifo_fd);
-            (*child_num)--;
             exit(1);
         }
 
         printf("Connection established with client %d as client %d\n", client_pid, num);
         fflush(stdout);
    
-        char log_msg[1024];
+        char log_msg[256];
         snprintf(log_msg, sizeof(log_msg), "Connection established with client %d as client %d\n", client_pid, num);
         log_message(log_msg);
 
         if(close(client_fifo_fd) == -1){
             perror("close");
-            (*child_num)--;
             exit(1);
         }
 
         while (1)
         {   
             // open client FIFO for reading
-            client_fifo_fd = open(client_fifo, O_RDONLY);
-            if (client_fifo_fd == -1) {
+            int client_fifo_fd1 = open(client_fifo, O_RDONLY| O_CREAT, 0666);
+            if (client_fifo_fd1 == -1) {
                 perror("open client fifo");
-                (*child_num)--;
                 exit(1);
             }
 
             Request req;
-            int read_bytes = read(client_fifo_fd, &req, sizeof(req));
+            int read_bytes = read(client_fifo_fd1, &req, sizeof(req));
             if(read_bytes == -1) {
                 perror("read request");
-                close(client_fifo_fd);
-                (*child_num)--;
+                close(client_fifo_fd1);
                 exit(1);
             }
 
-            switch (req.request)
-            {
-                case LIST:
-                    if(close(client_fifo_fd) == -1){
-                        perror("close");
-                        (*child_num)--;
-                        exit(1);
-                    }
-
-                    // open client FIFO for writing
-                    client_fifo_fd = open(client_fifo, O_WRONLY);
-                    if (client_fifo_fd == -1) {
-                        perror("open client fifo");
-                        (*child_num)--;
-                        exit(1);
-                    }
-
-                    DIR* dir = opendir(working_dir);
-                    if (dir == NULL) {
-                        perror("opendir");
-                        close(client_fifo_fd);
-                        (*child_num)--;
-                        exit(1);
-                    }
-
-                    // Read all directory entries
-                    struct dirent* entry;
-                    while ((entry = readdir(dir)) != NULL) {
-                        // Skip "." and ".." entries
-                        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                            continue;
-                        }
-
-                        // Write the file name to the FIFO
-                        size_t name_len = strlen(entry->d_name);
-                        write(client_fifo_fd, entry->d_name, name_len);
-                        write(client_fifo_fd, "\n", 1);
-                    }
-                    closedir(dir);
+            if(close(client_fifo_fd1) == -1){
+                perror("close");
+                exit(1);
+            }
+            
+            if (req.request == LIST)
+            {   
+                char log [256];
+                snprintf(log, sizeof(log), "Client %d requested LIST\n", num);
+                log_message(log);
+                // open client FIFO for writing
+                int client_fifo_fd2 = open(client_fifo, O_WRONLY | O_CREAT, 0666);
+                if (client_fifo_fd2 == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+                DIR* dir = opendir(working_dir);
+                if (dir == NULL) {
+                    perror("opendir");
                     close(client_fifo_fd);
-                    break;
+                    exit(1);
+                }
+                // Read all directory entries
+                struct dirent* entry;
+                while ((entry = readdir(dir)) != NULL) {
+                    // Skip "." and ".." entries
+                    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                        continue;
+                    }
+                    // Write the file name to the FIFO
+                    size_t name_len = strlen(entry->d_name);
+                    write(client_fifo_fd2, entry->d_name, name_len);
+                    write(client_fifo_fd2, "\n", 1);
+                }
+                closedir(dir);
+                close(client_fifo_fd2);   
+            }
+            
+            else if(req.request == READF){
+                
+                // open client FIFO for writing
+                int client_fifo_fd2 = open(client_fifo, O_WRONLY| O_CREAT, 0666);
+                if (client_fifo_fd2 == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
 
-                case READF:
-                    if(close(client_fifo_fd) == -1){
-                        perror("close");
-                        (*child_num)--;
+                char log_msg[1024];
+                snprintf(log_msg, sizeof(log_msg), "Client %d requested line %ld on %s\n", num, req.offset ,req.filename);
+                log_message(log_msg);
+
+                char file_path[512];
+                strcpy(file_path, working_dir);
+                strcat(file_path, req.filename);
+                char* readed;
+                FILE* fp = fopen(file_path, "r");
+                if (fp == NULL) {
+                    char* error_msg = "Invalid file name!";
+                    if (write(client_fifo_fd2, error_msg, strlen(error_msg)) == -1) {
+                        perror("write");
+                        close(client_fifo_fd2);
                         exit(1);
                     }
+                }
 
-                    char log_msg[1024];
-                    snprintf(log_msg, sizeof(log_msg), "Client %d requested line %ld on %s\n", num, req.offset ,req.filename);
-                    log_message(log_msg);
-
-                    // open client FIFO for writing
-                    client_fifo_fd = open(client_fifo, O_WRONLY);
-                    if (client_fifo_fd == -1) {
-                        perror("open client fifo");
-                        (*child_num)--;
-                        exit(1);
-                    }
-
-                    char file_path[512];
-                    strcpy(file_path, working_dir);
-                    strcat(file_path, req.filename);
-                    
-                    sem_t *mutex = sem_open(req.filename, O_CREAT | O_EXCL, 0666, 1);
-                    if (errno == EEXIST) {
-                        // Semaphore already exists, open it without creation
-                        mutex = sem_open(req.filename, 0);
-                        if (mutex == SEM_FAILED) {
-                            perror("sem_open");
-                            exit(EXIT_FAILURE);
-                        }
-                    } 
-                    else {
-                        perror("sem_open");
-                        exit(EXIT_FAILURE);
-                    }
-                    sem_wait(mutex);
-                    char* readed = get_line(file_path, req.offset);
-                    sem_post(mutex);
-                    
-                    if (readed == NULL)
-                    {
-                        char* error_msg = "Invalid line number!";
-                        if (write(client_fifo_fd, error_msg, strlen(error_msg)) == -1) {
-                            perror("write");
-                            close(client_fifo_fd);
-                            (*child_num)--;
-                            exit(1);
-                        }                        
-                    }
-
-                    else{
-                    
-                        if(write(client_fifo_fd, readed, strlen(readed)) == -1){
-                            perror("write");
-                            close(client_fifo_fd);
-                            (*child_num)--;
-                            free(readed);
-                            exit(1);
-                        }
-
+                else{
+                    readed = get_line(fp, req.offset);
+                }
+                
+                if (readed == NULL)
+                {
+                    char* error_msg = "Invalid line number!";
+                    if (write(client_fifo_fd2, error_msg, strlen(error_msg)) == -1) {
+                        perror("write");
                         free(readed);
-                    }
+                        close(client_fifo_fd2);
+                        exit(1);
+                    }                        
+                }
 
-                    if(close(client_fifo_fd) == -1){
-                        perror("close");
+                else{
+                
+                    if(write(client_fifo_fd2, readed, strlen(readed)) == -1){
+                        perror("write");
+                        close(client_fifo_fd2);
                         (*child_num)--;
                         exit(1);
                     }
 
-                    sem_close(mutex);
-                    break;
+                    free(readed);
+                }
 
-                default:
-                    break;
+                if(close(client_fifo_fd2) == -1){
+                    perror("close");
+                    free(readed);
+                    exit(1);
+                }
+            }
+
+            else if(req.request == WRITET){
+
+                int client_fifo_fd2 = open(client_fifo, O_WRONLY| O_CREAT, 0666);
+                if (client_fifo_fd2 == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+                char log[8192];
+                snprintf(log, sizeof(log), "Client %d requested WRITE %s to %s line %ld\n", num, req.string, req.filename, req.offset);
+                log_message(log);
+                
+                char file_path[512];
+                strcpy(file_path, working_dir);
+                strcat(file_path, req.filename);
+
+                FILE* fp = fopen(file_path, "r");
+                if (fp == NULL) {
+                    char* error_msg = "Invalid file name!";
+                    if (write(client_fifo_fd2, error_msg, strlen(error_msg)) == -1) {
+                        perror("write");
+                        close(client_fifo_fd2);
+                        exit(1);
+                    }
+                }
+
+                else
+                {
+                    if (write_to_line(fp, req.offset, req.string))
+                        write(client_fifo_fd2, "OK", 2);
+
+                    else
+                        write(client_fifo_fd2, "Invalid line number!", 21);
+                }
+
+                if(close(client_fifo_fd2) == -1){
+                    perror("close");
+                    exit(1);
+                }
+            }
+            
+            else if(req.request == QUIT){
+                char log_msg[1024];
+                snprintf(log_msg, sizeof(log_msg), "Client %d disconnected\n", num);
+                log_message(log_msg);
+                printf("%s", log_msg);
+                break;
+            }
+
+            else if (req.request == KILL)
+            {
+                char log_msg[1024];
+                snprintf(log_msg, sizeof(log_msg), "Client %d requested KILL\n", num);
+                log_message(log_msg);
+                kill(getpid(), SIGINT);
+                break;
+            }
+
+            else if(req.request == DOWNLOAD){
+                int client_fifo_fd2 = open(client_fifo, O_WRONLY| O_CREAT, 0666);
+                if (client_fifo_fd2 == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+
+                char log_msg[1024];
+                snprintf(log_msg, sizeof(log_msg), "Client %d requested download file %s\n", num,req.filename);
+                log_message(log_msg);
+
+                char file_path[512];
+                strcpy(file_path, working_dir);
+                strcat(file_path, req.filename);
+                char destination[512];
+                strcpy(destination, req.client_dir);
+                strcat(destination, "/");
+                strcat(destination, req.filename);
+                size_t transferred;
+                FILE* fp = fopen(file_path, "r");
+                if (fp == NULL) {
+                    char* error_msg = "Invalid file name!\n";
+                    if (write(client_fifo_fd2, error_msg, strlen(error_msg)) == -1) {
+                        perror("write");
+                        close(client_fifo_fd2);
+                        exit(1);
+                    }
+                }
+
+                else{
+                    transferred = copy_file(fp, destination);
+                }
+        
+                char message[1024];
+                snprintf(message, sizeof(message), "%ld bytes are transferred to client %d\n", transferred, num);
+                log_message(message);
+
+                if(write(client_fifo_fd2, message, strlen(message)) == -1){
+                    perror("write");
+                    close(client_fifo_fd2);
+                    (*child_num)--;
+                    exit(1);
+                }
+
+                if(close(client_fifo_fd2) == -1){
+                    perror("close");
+                    exit(1);
+                }
+            }
+        
+            else if(req.request == UPLOAD){
+                int client_fifo_fd2 = open(client_fifo, O_WRONLY| O_CREAT, 0666);
+                if (client_fifo_fd2 == -1) {
+                    perror("open client fifo");
+                    exit(1);
+                }
+
+                char log_msg[1024];
+                snprintf(log_msg, sizeof(log_msg), "Client %d requested upload file %s\n", num,req.filename);
+                log_message(log_msg);
+
+                char file_path[512];
+                strcpy(file_path, req.client_dir);
+                strcat(file_path, "/");
+                strcat(file_path, req.filename);
+                char destination[512];
+                strcpy(destination, working_dir);
+                strcat(destination, req.filename);
+                size_t transferred;
+                FILE* fp = fopen(file_path, "r");
+                if (fp == NULL) {
+                    char* error_msg = "Invalid file name!\n";
+                    if (write(client_fifo_fd2, error_msg, strlen(error_msg)) == -1) {
+                        perror("write");
+                        close(client_fifo_fd2);
+                        exit(1);
+                    }
+                }
+
+                else{
+                    transferred = copy_file(fp, destination);
+                }
+        
+                char message[1024];
+                snprintf(message, sizeof(message), "%ld bytes are transferred to server\n", transferred);
+                log_message(message);
+
+                if(write(client_fifo_fd2, message, strlen(message)) == -1){
+                    perror("write");
+                    close(client_fifo_fd2);
+                    (*child_num)--;
+                    exit(1);
+                }
+
+                if(close(client_fifo_fd2) == -1){
+                    perror("close");
+                    exit(1);
+                }
             }
         }
 
-        close(client_fifo_fd);
-        (*child_num)--;
         exit(0);
     }
-    else {
+
+    else 
         child_pids[(*child_num)-1] = pid;
-    }
+    
 }
 
 void sigchld_handler(int sig) {
+    pid_t pid;
+    int status;
 
-    if(!is_queue_empty(&connection_queue) && (*child_num) < max_client_num) {
+    // Wait for any terminated child process
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+        (*child_num)--;
+
+    if (!is_queue_empty(&connection_queue) && (*child_num) < max_client_num) {
         pid_t client_pid = dequeue(&connection_queue);
         handle_client(client_pid);
     }
 }
 
 void close_server(){
-    free(child_pids);
     
-    DIR* dir = opendir(working_dir);
-    if (dir == NULL) {
-        perror("opendir");
-        exit(1);
-    }
+    // DIR* dir = opendir(working_dir);
+    // if (dir == NULL) {
+    //     perror("opendir");
+    //     exit(1);
+    // }
 
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
+    // struct dirent* entry;
+    // while ((entry = readdir(dir)) != NULL) {
 
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
+    //     if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+    //         continue;
+    //     }
 
-        sem_unlink(entry->d_name);
-    }
+    //     sem_unlink(entry->d_name);
+    // }
     
-    closedir(dir);
+    // closedir(dir);
     munmap(&child_num, sizeof(child_num));
     munmap(&client_num, sizeof(client_num));
     sem_destroy(log_mutex);
@@ -305,12 +514,17 @@ void close_server(){
 }
 
 void sigint_handler(int sig) {
-   
-    for(int i = 0; i < (*child_num); i++) {
+  
+    char log_msg[1024];
+    snprintf(log_msg, sizeof(log_msg), "Server shutting down\n");
+    log_message(log_msg);
+    
+    for (int i = 0; i < (*child_num); i++) {
         kill(child_pids[i], SIGKILL);
     }
 
     close_server();
+    free(child_pids);
     exit(0);
 }
 
@@ -387,7 +601,6 @@ int main(int argc, char* argv[]) {
     sigaction(SIGINT, &sa2, NULL);
     sigaction(SIGTERM, &sa2, NULL);
     sigaction(SIGQUIT, &sa2, NULL);
-    sigaction(SIGSTOP, &sa2, NULL);
 
     working_dir = argv[1];
     int dir_len = strlen(working_dir);
