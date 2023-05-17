@@ -14,6 +14,10 @@
 #define BUFSIZE 1024
 int running = 1;
 
+void signal_handler(int sig) {
+  
+}
+
 int main(int argc, char *argv[]) {
     // parse command-line arguments
     if (argc != 3) {
@@ -21,6 +25,14 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     pid_t server_pid = atoi(argv[2]);
+
+    struct sigaction sa2;
+    sa2.sa_handler = signal_handler;
+    sigemptyset(&sa2.sa_mask);
+    sa2.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa2, NULL);
+    sigaction(SIGTERM, &sa2, NULL);
+    sigaction(SIGQUIT, &sa2, NULL);
 
     // create connection request struct
     connectionReq req;
@@ -351,7 +363,7 @@ int main(int argc, char *argv[]) {
                 strcpy(req.filename, filename);
                 req.filename[strlen(filename)] = '\0';
                 req.offset = atoi(lineNum);
-                //req.string = malloc(strlen(string) + 1);
+                
                 strcpy(req.string, string);
                 req.string[strlen(string)] = '\0';
 
@@ -404,7 +416,7 @@ int main(int argc, char *argv[]) {
                     memset(buf, 0, sizeof(buf));
                 }
 
-                //free(req.string);
+        
                 printf("\n");
                 if (close(client_fifo_fd2) == -1)
                 {

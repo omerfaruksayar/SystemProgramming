@@ -70,7 +70,7 @@ char* get_line(FILE* fp, int line_num) {
     return NULL;
 }
 
-int write_to_line(FILE* file, int line_num, const char* str) {
+int write_to_line(FILE* file, int line_num, const char* str, const char* path) {
     // Get the current position in the file
     long position = ftell(file);
 
@@ -113,6 +113,17 @@ int write_to_line(FILE* file, int line_num, const char* str) {
     // Move the file pointer back to the original position
     fseek(file, position, SEEK_SET);
 
+    // Close the original file
+    fclose(file);
+
+    // Reopen the original file in write mode
+    file = fopen(path, "w");
+    if (file == NULL) {
+        fprintf(stderr, "Error opening file\n");
+        fclose(temp_file);
+        return 0;
+    }
+
     // Copy the contents from the temporary file to the original file
     rewind(temp_file);
     while (fgets(buffer, sizeof(buffer), temp_file)) {
@@ -120,6 +131,7 @@ int write_to_line(FILE* file, int line_num, const char* str) {
     }
 
     fclose(temp_file);
+    fclose(file);
     return 1;
 }
 
@@ -273,7 +285,14 @@ void handle_client(pid_t client_pid) {
                 }
 
                 else{
+                    char semaphore_name[256];
+                    strcpy(semaphore_name, "/");
+                    strcat(semaphore_name, req.filename);
+                    sem_t* semaphore = sem_open(semaphore_name, O_CREAT, 0644, 1);
+                    sem_wait(semaphore);
                     readed = get_line(fp, req.offset);
+                    sem_post(semaphore);
+                    sem_close(semaphore);
                 }
                 
                 if (readed == NULL)
@@ -332,8 +351,17 @@ void handle_client(pid_t client_pid) {
                 }
 
                 else
-                {
-                    if (write_to_line(fp, req.offset, req.string))
+                {   
+                    char semaphore_name[256];
+                    strcpy(semaphore_name, "/");
+                    strcat(semaphore_name, req.filename);
+                    sem_t* semaphore = sem_open(semaphore_name, O_CREAT, 0644, 1);
+                    sem_wait(semaphore);
+                    int i = write_to_line(fp, req.offset, req.string, file_path);
+                    sem_post(semaphore);
+                    sem_close(semaphore);
+                    
+                    if (i)
                         write(client_fifo_fd2, "OK", 2);
 
                     else
@@ -393,7 +421,14 @@ void handle_client(pid_t client_pid) {
                 }
 
                 else{
+                    char semaphore_name[256];
+                    strcpy(semaphore_name, "/");
+                    strcat(semaphore_name, req.filename);
+                    sem_t* semaphore = sem_open(semaphore_name, O_CREAT, 0644, 1);
+                    sem_wait(semaphore);
                     transferred = copy_file(fp, destination);
+                    sem_post(semaphore);
+                    sem_close(semaphore);
                 }
         
                 char message[1024];
@@ -443,7 +478,14 @@ void handle_client(pid_t client_pid) {
                 }
 
                 else{
+                    char semaphore_name[256];
+                    strcpy(semaphore_name, "/");
+                    strcat(semaphore_name, req.filename);
+                    sem_t* semaphore = sem_open(semaphore_name, O_CREAT, 0644, 1);
+                    sem_wait(semaphore);
                     transferred = copy_file(fp, destination);
+                    sem_post(semaphore);
+                    sem_close(semaphore);
                 }
         
                 char message[1024];
@@ -488,23 +530,23 @@ void sigchld_handler(int sig) {
 
 void close_server(){
     
-    // DIR* dir = opendir(working_dir);
-    // if (dir == NULL) {
-    //     perror("opendir");
-    //     exit(1);
-    // }
+    DIR* dir = opendir(working_dir);
+    if (dir == NULL) {
+        perror("opendir");
+        exit(1);
+    }
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char semaphore_name[256];
+        strcpy(semaphore_name, "/");
+        strcat(semaphore_name, entry->d_name);
+        sem_unlink(semaphore_name);
+    }
 
-    // struct dirent* entry;
-    // while ((entry = readdir(dir)) != NULL) {
-
-    //     if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-    //         continue;
-    //     }
-
-    //     sem_unlink(entry->d_name);
-    // }
-    
-    // closedir(dir);
+    closedir(dir);
     munmap(&child_num, sizeof(child_num));
     munmap(&client_num, sizeof(client_num));
     sem_destroy(log_mutex);
